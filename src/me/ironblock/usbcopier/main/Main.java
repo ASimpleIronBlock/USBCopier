@@ -14,18 +14,21 @@ import java.util.List;
 import java.util.Objects;
 
 public class Main {
+    //复制到的位置
     public static final File copyDestination = new File("D:/usbCopier/");
     public static final Logger logger = LogManager.getLogger("Main");
 
     private final FileSystemView view = FileSystemView.getFileSystemView();
     private final List<File> rootList = Lists.newArrayList();
-    /*
-        logger设置
-     */
+
     public static void main(String[] args) {
 
         new Main().run();
     }
+
+    /**
+     * 运行
+     */
     public void run(){
         while (true){
             checkUSB();
@@ -36,6 +39,10 @@ public class Main {
             }
         }
     }
+
+    /**
+     * 检查是否有新的文件设备接入
+     */
     private void checkUSB(){
         File[] roots = File.listRoots();
         for (File root : roots) {
@@ -48,6 +55,10 @@ public class Main {
 
     }
 
+    /**
+     * 由checkUSB()方法触发,这个方法检测接入的是不是U盘,如果是,就开始准备复制文件
+     * @param usb 接入设备的盘符
+     */
     private void onUSBIn(File usb){
         logger.error("Detected USB in :"+view.getSystemDisplayName(usb));
         logger.error("USB type:"+view.getSystemTypeDescription(usb));
@@ -58,6 +69,12 @@ public class Main {
         }
     }
 
+    /**
+     * 复制文件
+     * 创建文件的文件夹和md5的文件夹
+     * @param src 源文件
+     * @param des 目标路径
+     */
     private void copy(File src,File des){
         String usbName = view.getSystemDisplayName(src).split(" ")[0];
         File file = new File(des,usbName);
@@ -76,6 +93,12 @@ public class Main {
         logger.error("复制完成");
     }
 
+    /**
+     * 递归的复制文件
+     * @param src 源文件
+     * @param des 目标路径
+     * @param usbName U盘的名字
+     */
     private void copyFiles(File src,File des,String usbName){
 
         if (src.isDirectory()){
@@ -98,7 +121,11 @@ public class Main {
 
     }
 
-
+    /**
+     * 计算md5
+     * @param bytes 文件的bytes
+     * @return 计算出的md5
+     */
     private byte[] calcMD5(byte[] bytes){
         try {
             MessageDigest md5Calculator = MessageDigest.getInstance("MD5");
@@ -111,6 +138,12 @@ public class Main {
         return new byte[0];
     }
 
+    /**
+     * 根据文件的大小,md5等因素判断文件是否需要复制
+     * @param src 源文件
+     * @param usbName U盘的名称
+     * @return 是否需要复制
+     */
     private boolean copyOrNot(File src,String usbName){
         try {
             if(src.exists()){
