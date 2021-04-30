@@ -11,7 +11,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 
 public class Main {
     //复制到的位置
@@ -102,15 +101,22 @@ public class Main {
     private void copyFiles(File src,File des,String usbName){
 
         if (src.isDirectory()){
-            for (File file: Objects.requireNonNull(src.listFiles())){
-                copyFiles(file,new File(des,file.getName()),usbName);
+            File[] fileList = src.listFiles();
+            if (fileList==null){
+                logger.fatal("在读取文件夹"+src+"时出错");
+            }else{
+                for (File file: fileList){
+                    copyFiles(file,new File(des,file.getName()),usbName);
+                }
             }
         }else if(src.isFile()){
             if (copyOrNot(src, usbName)){
                 try {
                     logger.error("尝试把文件从 "+src+" 复制到 "+des);
                     des.getParentFile().mkdirs();
-                    IOUtils.copy(new FileInputStream(src),new FileOutputStream(des));
+                    FileInputStream fileInputStream = new FileInputStream(src);
+                    IOUtils.copy(fileInputStream,new FileOutputStream(des));
+                    fileInputStream.close();
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
