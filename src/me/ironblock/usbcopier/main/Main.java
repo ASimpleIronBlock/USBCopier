@@ -1,6 +1,7 @@
 package me.ironblock.usbcopier.main;
 
 import com.google.common.collect.Lists;
+import me.ironblock.usbcopier.config.ConfigHelper;
 import org.apache.commons.io.IOUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -9,28 +10,43 @@ import javax.swing.filechooser.FileSystemView;
 import java.io.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class Main {
-    //复制到的位置
-    public static final File copyDestination = new File("D:/usbCopier/");
+    //Copy Destination
+    public static File copyDestination;
     public static final Logger logger = LogManager.getLogger("Main");
-
     private final FileSystemView view = FileSystemView.getFileSystemView();
     private final List<File> rootList = Lists.newArrayList();
+    private final ConfigHelper config = new ConfigHelper();
+
+
+    private final List<CompletableFuture<Void>> threads = new ArrayList<>();
 
     public static void main(String[] args) {
-
-        new Main().run();
+        try {
+            new Main().run();
+        } catch (Exception e) {
+            logger.fatal("Exception",e);
+        }
     }
 
     /**
-     * 运行
+     * Run
      */
     public void run(){
+        config.init();
+        copyDestination = config.getOutputDir();
         while (true){
-            checkUSB();
+            checkHardDrive();
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
@@ -40,9 +56,9 @@ public class Main {
     }
 
     /**
-     * 检查是否有新的文件设备接入
+     * Check if there is a new hard drive
      */
-    private void checkUSB(){
+    private void checkHardDrive(){
         File[] roots = File.listRoots();
         for (File root : roots) {
             if (!rootList.contains(root)){
@@ -55,55 +71,95 @@ public class Main {
     }
 
     /**
-     * 由checkUSB()方法触发,这个方法检测接入的是不是U盘,如果是,就开始准备复制文件
-     * @param usb 接入设备的盘符
+     * Triggered by the method checkHardDrive(), this method check if the new hard drive is a USB.If yes,prepare to copy files.
+     * @param usb the new hard disk's identifier
      */
     private void onUSBIn(File usb){
-        logger.error("Detected USB in :"+view.getSystemDisplayName(usb));
-        logger.error("USB type:"+view.getSystemTypeDescription(usb));
-        System.out.println();
-        if (view.getSystemTypeDescription(usb).equals("可移动磁盘")){
-            logger.error("检测到了插入电脑的U盘");
-            new Thread(()->copy(usb,copyDestination)).start();
+        String usbName = view.getSystemDisplayName(usb);
+        String usbNameWithoutDiskIdentifier = usbName.split(" ")[0];
+        logger.info("Detected Disk in :"+usbName);
+        logger.info("USB type:"+view.getSystemTypeDescription(usb));
+        if (view.getSystemTypeDescription(usb).equals(config.getExternal_HardDrive_String())){
+            logger.info("Detected USB in");
+            if ((config.getListMode()==2&&config.getWhiteList().contains(usbNameWithoutDiskIdentifier))||(config.getListMode()==1&& !config.getBlackList().contains(usbNameWithoutDiskIdentifier))||config.getListMode()==0){
+                copy(usb,copyDestination);
+            }else{
+                logger.info("The USB will not be copied. USBName:"+usbNameWithoutDiskIdentifier);
+            }
         }
+
+
     }
 
     /**
-     * 复制文件
-     * 创建文件的文件夹和md5的文件夹
-     * @param src 源文件
-     * @param des 目标路径
+     * Launch the copy threads and wait them to complete
+     * @param usb the file of the usb
+     * @param des copy destination
+     * @param usbName the name of the usb
+     */
+    private void launchCopyThread(File usb,File des,String usbName){
+        List<File> fileList = Arrays.asList(Objects.requireNonNull(usb.listFiles()));
+        AtomicInteger current = new AtomicInteger(fileList.size());
+        logger.info(fileList.size());
+        final ReadWriteLock lock = new ReentrantReadWriteLock();
+        for (int i = 0; i < config.getCopyThreads(); i++) {
+            threads.add(CompletableFuture.supplyAsync(()->{
+                while (current.get()>0) {
+                    lock.writeLock().lock();
+                    logger.info("get lock");
+                    File file = fileList.get(current.decrementAndGet());
+                    logger.info("unlock");
+                    lock.writeLock().unlock();
+                    logger.info("Start copying files from "+file+" to "+new File(des,usbName+"/"+file.getName()));
+                    copyFiles(file,new File(des,usbName+"/"+file.getName()),usbName);
+                    logger.info("copied");
+                }
+                logger.info(Thread.currentThread()+" completed");
+                return null;
+            }));
+            logger.info("Launched Thread "+i);
+        }
+        try {
+            CompletableFuture.allOf(threads.toArray(new CompletableFuture[0])).get();
+        } catch (InterruptedException|ExecutionException e) {
+            logger.error("",e);
+        }
+        logger.info(Thread.currentThread()+" copy completed");
+    }
+
+    /**
+     * Copy files,create folders where files and md5 files will be put
+     * @param src Directory or file will be copied
+     * @param des Destination
      */
     private void copy(File src,File des){
         String usbName = view.getSystemDisplayName(src).split(" ")[0];
         File file = new File(des,usbName);
         if (!file.exists()){
-            System.out.println(file);
-            logger.error("自动创建了文件夹: "+file);
+            logger.info("Created folder automatically: "+file);
             file.mkdirs();
         }
         File md5Folder = new File(des,"md5/"+usbName);
         if (!md5Folder.exists()){
-            System.out.println(md5Folder);
-            logger.error("自动创建了文件夹: "+md5Folder);
+            logger.info("Created folder automatically: "+md5Folder);
             md5Folder.mkdirs();
         }
-        copyFiles(src,new File(des,usbName),usbName);
-        logger.error("复制完成");
+        launchCopyThread(src,des,usbName);
+
     }
 
     /**
-     * 递归的复制文件
-     * @param src 源文件
-     * @param des 目标路径
-     * @param usbName U盘的名字
+     * Copy files recursively
+     * @param src Source file
+     * @param des destination
+     * @param usbName name of the USB
      */
     private void copyFiles(File src,File des,String usbName){
 
         if (src.isDirectory()){
             File[] fileList = src.listFiles();
             if (fileList==null){
-                logger.fatal("在读取文件夹"+src+"时出错");
+                logger.fatal("A error occurred when reading "+src);
             }else{
                 for (File file: fileList){
                     copyFiles(file,new File(des,file.getName()),usbName);
@@ -112,7 +168,7 @@ public class Main {
         }else if(src.isFile()){
             if (copyOrNot(src, usbName)){
                 try {
-                    logger.error("尝试把文件从 "+src+" 复制到 "+des);
+                    logger.info("Attempting to copy file from "+src+" to "+des);
                     des.getParentFile().mkdirs();
                     FileInputStream fileInputStream = new FileInputStream(src);
                     IOUtils.copy(fileInputStream,new FileOutputStream(des));
@@ -121,16 +177,16 @@ public class Main {
                     e.printStackTrace();
                 }
             }else{
-                logger.error("文件 "+src+" 和硬盘里的文件有相同的md5,所以没有复制");
+                logger.info("didn't copy file due to some reason.");
             }
         }
 
     }
 
     /**
-     * 计算md5
-     * @param bytes 文件的bytes
-     * @return 计算出的md5
+     * Calculate MD5
+     * @param bytes The byte array of the file
+     * @return md5 calculated
      */
     private byte[] calcMD5(byte[] bytes){
         try {
@@ -139,44 +195,64 @@ public class Main {
             return md5Calculator.digest();
         } catch (NoSuchAlgorithmException e) {
             e.printStackTrace();
-            logger.fatal("在计算md5时候出现了错误");
+            logger.fatal("An error encountered occurred while calculating md5.");
         }
         return new byte[0];
     }
 
     /**
-     * 根据文件的大小,md5等因素判断文件是否需要复制
-     * @param src 源文件
-     * @param usbName U盘的名称
-     * @return 是否需要复制
+     * Judge if the file need to be copied according to its md5,size,etc.
+     * @param src file
+     * @param usbName name of the USB
+     * @return need to be copied
      */
     private boolean copyOrNot(File src,String usbName){
         try {
             if(src.exists()){
-                //不复制大于100M的文件
-                if (src.length()>100_000_000L){
+                //Stop copying files larger than config
+                if (src.length()> config.getMaxFileSize()*1024){
+                    logger.info(src+" is too large ("+src.length()+"/"+config.getMaxFileSize()*1024+")");
                     return false;
                 }
-                byte[] nowMD5 = calcMD5(IOUtils.toByteArray(new FileInputStream(src)));
+                //suffixes
+                if (config.isUseSuffix()){
+                    String[] tmp = src.getName().split("\\.");
+                    if (!config.getSuffixes().contains(tmp[tmp.length - 1])){
+                        logger.info(src+" doesn't have the specified suffix");
+                        return false;
+                    }
+
+                }
+
+                //md5
+                FileInputStream stream = new FileInputStream(src);
+                byte[] nowMD5 = calcMD5(IOUtils.toByteArray(stream));
                 int first = src.getAbsolutePath().indexOf('\\');
                 String filePath = src.getAbsolutePath().substring(first);
                 File md5File = new File(copyDestination,"/md5/"+usbName+filePath+".md5");
-                logger.error("尝试在 "+md5File+" 为 "+src +" 寻找MD5的值");
+                logger.info("Attempting to find md5 value for "+src +" at "+md5File);
+                stream.close();
                 if (md5File.exists()){
                     byte[] oldMD5 = IOUtils.toByteArray(new FileInputStream(md5File));
-                    return !Arrays.equals(oldMD5, nowMD5);
+                    boolean md5Equals = Arrays.equals(oldMD5, nowMD5);
+                    logger.info(src+"'s md5 in disk is "+ Arrays.toString(oldMD5) + ",new md5 is "+ Arrays.toString(nowMD5),",so "+(md5Equals?"don't copy":"copy"));
+                    return !md5Equals;
                 }else{
+                    //保存md5
                     md5File.getParentFile().mkdirs();
                     IOUtils.write(nowMD5,new FileOutputStream(md5File));
                     return true;
                 }
+
+
             }
 
         } catch (IOException e) {
             e.printStackTrace();
         }
-        return true;
+        return false;
 
     }
+
 
 }
